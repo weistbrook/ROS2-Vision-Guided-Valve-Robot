@@ -8,7 +8,7 @@ import threading
 import queue
 import time
 
-from interfaces.msg import ValveCommand
+from valve_interfaces.msg import ValveCommand
 
 
 class ArmControllerNode(Node):

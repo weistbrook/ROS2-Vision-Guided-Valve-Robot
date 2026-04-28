@@ -12,11 +12,11 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
 # 建议把 msg 文件命名为 ValveCommand.msg，然后这样导入
-from interfaces.msg import ValveCommand
+from valve_interfaces.msg import ValveCommand
 
 # 如果 judge_proper 在 utility.py 里，就改成：from utility import judge_proper
 #from utility import judge_proper
-import dev_angle
+from . import dev_angle
 
 class ValveDetectionNode(Node):
     """
@@ -34,7 +34,7 @@ class ValveDetectionNode(Node):
         super().__init__('valve_detection_node')
 
         self.declare_parameter('model_path', '/home/jetson/ultralytics_robot/best.engine')
-        self.declare_parameter('camera_info_yaml', '/home/jetson/ultralytics_robot/src/robot_valve_control/robot_valve_control/camera_info.yaml')
+        self.declare_parameter('camera_info_yaml', '/home/jetson/yolov5/ost.yaml')
         self.declare_parameter('rgb_topic', '/camera/color/image_raw')
         self.declare_parameter('depth_topic', '/camera/depth/image_raw')
         self.declare_parameter('command_topic', '/valve/command')
@@ -68,14 +68,21 @@ class ValveDetectionNode(Node):
             self.get_logger().warn(f'深度图解析失败: {e}')
 
     def image_callback(self, msg):
-        if self.depth_image is None or self.camera_info is None:
-            self.get_logger().warn('等待深度图和相机内参...')
-            return
-
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+
+            if self.depth_image is None or self.camera_info is None:
+                self.get_logger().warn('等待深度图和相机内参...')
+                if self.get_parameter('show_image').value:
+                    cv2.imshow('YOLOv11 Detection', frame)
+                    cv2.waitKey(1)
+                return
+
             det = self.run_yolo(frame)
             if det is None or len(det) == 0:
+                if self.get_parameter('show_image').value:
+                    cv2.imshow('YOLOv11 Detection', frame)
+                    cv2.waitKey(1)
                 return
 
             valve_target = self.select_target(det, class_id=0, frame=frame)
@@ -110,7 +117,7 @@ class ValveDetectionNode(Node):
             # 偏差小于10度视为对正
             return (abs(offset_deg) < 10.0), offset_deg
         except Exception as e:
-            self.logwarn(f"judge_proper 计算失败: {e}")  # 打印警告
+            self.get_logger().warn(f"judge_proper 计算失败: {e}")
             return False, 0.0  # 异常时返回默认值        
 
     def run_yolo(self, frame):
