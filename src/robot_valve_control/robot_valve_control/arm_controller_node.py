@@ -8,6 +8,7 @@ import threading
 import queue
 import time
 
+from std_msgs.msg import Bool
 from valve_interfaces.msg import ValveCommand
 
 
@@ -15,8 +16,15 @@ class ArmControllerNode(Node):
     def __init__(self, name='arm_controller_node'):
         super().__init__(name)
 
-        self.host = '192.168.0.200'
-        self.port = 2090
+        self.declare_parameter('host', '192.168.0.200')
+        self.declare_parameter('port', 2090)
+        self.declare_parameter('require_ui_enable', False)
+
+        self.host = self.get_parameter('host').value
+        self.port = int(self.get_parameter('port').value)
+        self.require_ui_enable = bool(self.get_parameter('require_ui_enable').value)
+        self.ui_motion_enabled = not self.require_ui_enable
+
         self.client_socket = None
         self.connected = False
         self.response_queue = queue.Queue()
@@ -25,14 +33,26 @@ class ArmControllerNode(Node):
         self.last_command_time = 0.0
         self.command_interval = 5.0
 
-        self._connect()
-
+        self.connected_pub = self.create_publisher(
+            Bool,
+            '/valve/arm_connected',
+            10
+        )
         self.subscription = self.create_subscription(
             ValveCommand,
             '/valve/command',
             self.command_callback,
             10
         )
+        self.enable_subscription = self.create_subscription(
+            Bool,
+            '/valve/arm_motion_enable',
+            self.enable_callback,
+            10
+        )
+        self.status_timer = self.create_timer(0.5, self.publish_connected_status)
+
+        self._connect()
 
         self.worker_thread = threading.Thread(
             target=self.command_worker,
@@ -40,7 +60,10 @@ class ArmControllerNode(Node):
         )
         self.worker_thread.start()
 
-        self.get_logger().info('Arm Controller Node has been started.')
+        if self.require_ui_enable:
+            self.get_logger().info('Arm Controller Node has been started in UI-gated mode.')
+        else:
+            self.get_logger().info('Arm Controller Node has been started in direct-control mode.')
 
     def _connect(self):
         try:
@@ -77,6 +100,8 @@ class ArmControllerNode(Node):
                 break
 
         self.connected = False
+        if self.require_ui_enable:
+            self.ui_motion_enabled = False
         try:
             self.client_socket.close()
         except Exception:
@@ -107,10 +132,16 @@ class ArmControllerNode(Node):
         except Exception as e:
             self.get_logger().error(f"发送指令失败: {e}")
             self.connected = False
+            if self.require_ui_enable:
+                self.ui_motion_enabled = False
             return None
 
     def command_callback(self, msg):
         if not msg.valid:
+            return
+
+        if self.require_ui_enable and not self.ui_motion_enabled:
+            self.get_logger().debug('等待 UI 一键旋阀使能，暂不执行运动指令。')
             return
 
         if self.command_queue.full():
@@ -120,6 +151,21 @@ class ArmControllerNode(Node):
                 pass
 
         self.command_queue.put_nowait(msg)
+
+    def enable_callback(self, msg):
+        if not self.require_ui_enable:
+            return
+
+        self.ui_motion_enabled = bool(msg.data)
+        if self.ui_motion_enabled:
+            self.get_logger().info('已收到 UI 一键旋阀使能，开始接受运动指令。')
+        else:
+            self.get_logger().info('UI 已关闭运动使能，暂停接受运动指令。')
+
+    def publish_connected_status(self):
+        msg = Bool()
+        msg.data = bool(self.connected)
+        self.connected_pub.publish(msg)
 
     def command_worker(self):
         while rclpy.ok():
@@ -150,13 +196,13 @@ class ArmControllerNode(Node):
             time.sleep(5.0)
 
         if msg.motion_type == "far_move":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y - 350.0:.3f},{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{-msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "no_ahead_check":
             move_cmd = f"Move.LOffset {{{msg.x:.3f},0.000,{-msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "check_and_spin":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y - 250.0:.3f},{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{-msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "small_move":
             move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{-msg.z:.3f},0,0,0}}"

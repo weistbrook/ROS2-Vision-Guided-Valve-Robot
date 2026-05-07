@@ -12,16 +12,18 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
+from std_msgs.msg import Bool
 from valve_interfaces.msg import ValveCommand, ValveVision
 
 from .valve_detect_gui import Ui_MainWindow
 
 
 class Ros2GuiNode(Node):
-    def __init__(self, on_vision_cb, on_command_cb):
+    def __init__(self, on_vision_cb, on_command_cb, on_arm_status_cb):
         super().__init__('qt_gui_node')
         self._on_vision_cb = on_vision_cb
         self._on_command_cb = on_command_cb
+        self._on_arm_status_cb = on_arm_status_cb
         self._vision_sub = self.create_subscription(
             ValveVision,
             '/valve/vision',
@@ -34,6 +36,17 @@ class Ros2GuiNode(Node):
             self._command_callback,
             10,
         )
+        self.arm_motion_enable_pub = self.create_publisher(
+            Bool,
+            '/valve/arm_motion_enable',
+            10,
+        )
+        self._arm_status_sub = self.create_subscription(
+            Bool,
+            '/valve/arm_connected',
+            self._arm_status_callback,
+            10,
+        )
         self.get_logger().info('Qt GUI ROS2 node started.')
 
     def _vision_callback(self, msg):
@@ -41,6 +54,9 @@ class Ros2GuiNode(Node):
 
     def _command_callback(self, msg):
         self._on_command_cb(msg)
+
+    def _arm_status_callback(self, msg):
+        self._on_arm_status_cb(msg)
 
 
 class GUINode(QMainWindow):
@@ -58,6 +74,9 @@ class GUINode(QMainWindow):
         self.last_depth_frame = None
         self.received_frame_count = 0
         self._stopping_detector = False
+        self._stopping_arm = False
+        self.arm_connected = False
+        self.arm_motion_enabled = False
 
         self.detector_process = QProcess(self)
         self.detector_process.setProcessChannelMode(QProcess.MergedChannels)
@@ -65,13 +84,24 @@ class GUINode(QMainWindow):
         self.detector_process.finished.connect(self._on_detector_finished)
         self.detector_process.errorOccurred.connect(self._on_detector_error)
 
+        self.arm_process = QProcess(self)
+        self.arm_process.setProcessChannelMode(QProcess.MergedChannels)
+        self.arm_process.readyReadStandardOutput.connect(self._append_arm_process_log)
+        self.arm_process.finished.connect(self._on_arm_finished)
+        self.arm_process.errorOccurred.connect(self._on_arm_error)
+
         self.ui.startCameraButton.clicked.connect(self.start_camera)
         self.ui.stopCameraButton.clicked.connect(self.stop_camera)
+        self.ui.connectArmButton.clicked.connect(self.connect_arm)
+        self.ui.rotateValveButton.clicked.connect(self.enable_arm_motion)
         self.ui.imageModeComboBox.currentIndexChanged.connect(self.update_camera_view)
 
         self._reset_valve_data()
         self._set_current_command('none')
         self.ui.fpsValueLabel.setText('10 FPS')
+        self._set_arm_process_running(False)
+        self._set_arm_connected(False)
+        self._set_arm_motion_enabled(False)
         self._set_camera_running(False)
         self._set_placeholder('等待图像流...')
 
@@ -103,6 +133,21 @@ class GUINode(QMainWindow):
         self.ui.yValueLabel.setText(self._format_mm(msg.y))
         self.ui.zValueLabel.setText(self._format_mm(msg.z))
         self.ui.confidenceValueLabel.setText(self._format_confidence(msg.confidence))
+
+    def on_arm_status_message(self, msg):
+        if self.arm_process.state() == QProcess.NotRunning:
+            return
+
+        connected = bool(msg.data)
+        if connected == self.arm_connected:
+            return
+
+        self._set_arm_connected(connected)
+        self._set_arm_motion_enabled(False)
+        if connected:
+            self.ui.commandLogEdit.append('[Arm] 机械臂 TCP 连接成功，可以点击“一键旋阀”。')
+        else:
+            self.ui.commandLogEdit.append('[Arm] 机械臂 TCP 已断开，已暂停一键旋阀。')
 
     def start_camera(self):
         if self.detector_process.state() != QProcess.NotRunning:
@@ -137,6 +182,83 @@ class GUINode(QMainWindow):
             self._set_placeholder('图像处理节点启动失败')
             self.ui.commandLogEdit.append('[Vision] 启动图像处理节点失败，请确认 ROS2 环境已 source。')
 
+    def connect_arm(self):
+        if self.arm_process.state() != QProcess.NotRunning:
+            self.ui.commandLogEdit.append('[Arm] 机械臂控制节点已在运行。')
+            return
+
+        host = self.ui.armIpLineEdit.text().strip() or '192.168.0.200'
+        try:
+            port = int(self.ui.armPortLineEdit.text().strip())
+        except ValueError:
+            self.ui.commandLogEdit.append('[Arm] 端口号无效，请输入整数。')
+            return
+
+        self._stopping_arm = False
+        self._set_arm_process_running(False)
+        self._set_arm_connected(False)
+        self._set_arm_motion_enabled(False)
+        self.ui.commandLogEdit.append(f'[Arm] 正在启动机械臂控制节点: {host}:{port}')
+
+        self.arm_process.start(
+            'ros2',
+            [
+                'run',
+                'robot_valve_control',
+                'arm_controller_node',
+                '--ros-args',
+                '-p',
+                f'host:={host}',
+                '-p',
+                f'port:={port}',
+                '-p',
+                'require_ui_enable:=true',
+            ],
+        )
+        started = self.arm_process.waitForStarted(3000)
+        if started:
+            self._set_arm_process_running(True)
+            self._set_arm_connected(False)
+            self._set_arm_motion_enabled(False)
+            self.ui.commandLogEdit.append('[Arm] 已启动机械臂控制节点，等待 TCP 连接成功。')
+        else:
+            self._set_arm_process_running(False)
+            self._set_arm_connected(False)
+            self.ui.commandLogEdit.append('[Arm] 启动机械臂控制节点失败，请确认 ROS2 环境已 source。')
+
+    def enable_arm_motion(self):
+        if self.arm_process.state() == QProcess.NotRunning:
+            self.ui.commandLogEdit.append('[Arm] 请先连接机械臂。')
+            return
+        if not self.arm_connected:
+            self.ui.commandLogEdit.append('[Arm] 机械臂 TCP 尚未连接成功，不能使能运动。')
+            return
+
+        msg = Bool()
+        msg.data = True
+        if self.ros_node is not None:
+            self.ros_node.arm_motion_enable_pub.publish(msg)
+        self._set_arm_motion_enabled(True)
+        self.ui.commandLogEdit.append('[Arm] 已使能一键旋阀，机械臂控制节点将接受后续 ValveCommand 指令。')
+
+    def stop_arm(self):
+        self._set_arm_motion_enabled(False)
+        if self.ros_node is not None:
+            msg = Bool()
+            msg.data = False
+            self.ros_node.arm_motion_enable_pub.publish(msg)
+
+        if self.arm_process.state() == QProcess.NotRunning:
+            self._set_arm_process_running(False)
+            self._set_arm_connected(False)
+            return
+
+        self._stopping_arm = True
+        self._terminate_process_tree(self.arm_process)
+        self._set_arm_process_running(False)
+        self._set_arm_connected(False)
+        self.ui.commandLogEdit.append('[Arm] 已停止机械臂控制节点。')
+
     def stop_camera(self):
         self.last_rgb_frame = None
         self.last_depth_frame = None
@@ -151,16 +273,16 @@ class GUINode(QMainWindow):
 
         self._stopping_detector = True
         self._set_placeholder('正在停止图像处理节点...')
-        self._terminate_detector_tree()
+        self._terminate_process_tree(self.detector_process)
         self._set_camera_running(False)
         self._set_placeholder('相机已停止')
         self.ui.commandLogEdit.append('[Vision] 已停止图像处理节点。')
 
-    def _terminate_detector_tree(self):
-        pid = int(self.detector_process.processId() or 0)
+    def _terminate_process_tree(self, process):
+        pid = int(process.processId() or 0)
         if pid <= 0:
-            self.detector_process.kill()
-            self.detector_process.waitForFinished(1000)
+            process.kill()
+            process.waitForFinished(1000)
             return
 
         if sys.platform.startswith('win'):
@@ -170,7 +292,7 @@ class GUINode(QMainWindow):
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-            self.detector_process.waitForFinished(3000)
+            process.waitForFinished(3000)
             return
 
         child_pids = self._child_pids(pid)
@@ -178,18 +300,18 @@ class GUINode(QMainWindow):
             self._send_signal(child_pid, signal.SIGINT)
         self._send_signal(pid, signal.SIGINT)
 
-        if self.detector_process.waitForFinished(3000):
+        if process.waitForFinished(3000):
             return
 
         child_pids = self._child_pids(pid)
         for child_pid in child_pids:
             self._send_signal(child_pid, signal.SIGTERM)
         self._send_signal(pid, signal.SIGTERM)
-        self.detector_process.waitForFinished(2000)
+        process.waitForFinished(2000)
 
-        if self.detector_process.state() != QProcess.NotRunning:
-            self.detector_process.kill()
-            self.detector_process.waitForFinished(1000)
+        if process.state() != QProcess.NotRunning:
+            process.kill()
+            process.waitForFinished(1000)
 
     def _child_pids(self, pid):
         try:
@@ -228,6 +350,24 @@ class GUINode(QMainWindow):
         if output:
             self.ui.commandLogEdit.append(output)
 
+    def _append_arm_process_log(self):
+        output = bytes(self.arm_process.readAllStandardOutput()).decode('utf-8', errors='ignore').strip()
+        if output:
+            self.ui.commandLogEdit.append(output)
+
+    def _on_arm_finished(self):
+        self._set_arm_process_running(False)
+        self._set_arm_connected(False)
+        self._set_arm_motion_enabled(False)
+        if not self._stopping_arm:
+            self.ui.commandLogEdit.append('[Arm] 机械臂控制节点已退出。')
+
+    def _on_arm_error(self, error):
+        self._set_arm_process_running(False)
+        self._set_arm_connected(False)
+        self._set_arm_motion_enabled(False)
+        self.ui.commandLogEdit.append(f'[Arm] 机械臂控制节点进程错误: {error}')
+
     def _set_camera_running(self, running):
         self.ui.startCameraButton.setEnabled(not running)
         self.ui.stopCameraButton.setEnabled(running)
@@ -237,6 +377,37 @@ class GUINode(QMainWindow):
         else:
             self.ui.cameraStatusValueLabel.setText('未启动')
             self.ui.systemStatusLabel.setText('● 系统状态：待连接')
+
+    def _set_arm_process_running(self, running):
+        self.ui.connectArmButton.setEnabled(not running)
+        self.ui.armIpLineEdit.setEnabled(not running)
+        self.ui.armPortLineEdit.setEnabled(not running)
+        if running:
+            self.ui.connectArmButton.setText('控制节点启动中')
+        else:
+            self.ui.connectArmButton.setText('连接机械臂')
+
+    def _set_arm_connected(self, connected):
+        self.arm_connected = bool(connected)
+        if connected:
+            self.ui.connectArmButton.setText('机械臂已连接')
+        else:
+            if self.arm_process.state() != QProcess.NotRunning:
+                self.ui.connectArmButton.setText('控制节点启动中')
+            else:
+                self.ui.connectArmButton.setText('连接机械臂')
+
+    def _set_arm_motion_enabled(self, enabled):
+        self.arm_motion_enabled = bool(enabled)
+        self.ui.rotateValveButton.setEnabled(
+            self.arm_process.state() != QProcess.NotRunning
+            and self.arm_connected
+            and not enabled
+        )
+        if enabled:
+            self.ui.rotateValveButton.setText('一键旋阀已使能')
+        else:
+            self.ui.rotateValveButton.setText('一键旋阀')
 
     def _reset_valve_data(self):
         self.ui.xValueLabel.setText('-- mm')
@@ -339,6 +510,7 @@ class GUINode(QMainWindow):
 
     def closeEvent(self, event):
         self.stop_camera()
+        self.stop_arm()
         super().closeEvent(event)
 
 
@@ -350,7 +522,11 @@ def main(args=None):
     app = QApplication(qt_args)
 
     window = GUINode(ros_node=None)
-    ros_node = Ros2GuiNode(window.on_vision_message, window.on_command_message)
+    ros_node = Ros2GuiNode(
+        window.on_vision_message,
+        window.on_command_message,
+        window.on_arm_status_message,
+    )
     window.ros_node = ros_node
     window.show()
 
@@ -364,6 +540,7 @@ def main(args=None):
     finally:
         spin_timer.stop()
         window.stop_camera()
+        window.stop_arm()
         ros_node.destroy_node()
         rclpy.shutdown()
 
