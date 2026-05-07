@@ -83,6 +83,7 @@ class ValveDetectionNode(Node):
 
             det = self.run_yolo(frame)
             if det is None or len(det) == 0:
+                self.publish_none_command()
                 self.publish_vision(frame)
                 if self.get_parameter('show_image').value:
                     cv2.imshow('YOLOv11 Detection', frame)
@@ -95,6 +96,8 @@ class ValveDetectionNode(Node):
             command = self.decide_command(frame, valve_target, small_target)
             if command is not None and command.valid:
                 self.command_pub.publish(command)
+            else:
+                self.publish_none_command()
 
             self.publish_vision(frame)
 
@@ -120,6 +123,19 @@ class ValveDetectionNode(Node):
             self.vision_pub.publish(msg)
         except Exception as e:
             self.get_logger().warn(f'图像消息发布失败: {e}')
+
+    def publish_none_command(self):
+        msg = ValveCommand()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'camera_color_optical_frame'
+        msg.valid = False
+        msg.is_small = False
+        msg.motion_type = 'none'
+        msg.need_rotation_correction = False
+        msg.rotation_correction_deg = 0.0
+        msg.confidence = 0.0
+        msg.class_id = -1
+        self.command_pub.publish(msg)
 
     def judge_proper(self, roi):
         """

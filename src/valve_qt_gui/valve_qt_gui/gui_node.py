@@ -12,25 +12,35 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
-from valve_interfaces.msg import ValveVision
+from valve_interfaces.msg import ValveCommand, ValveVision
 
 from .valve_detect_gui import Ui_MainWindow
 
 
 class Ros2GuiNode(Node):
-    def __init__(self, on_vision_cb):
+    def __init__(self, on_vision_cb, on_command_cb):
         super().__init__('qt_gui_node')
         self._on_vision_cb = on_vision_cb
+        self._on_command_cb = on_command_cb
         self._vision_sub = self.create_subscription(
             ValveVision,
             '/valve/vision',
             self._vision_callback,
             10,
         )
+        self._command_sub = self.create_subscription(
+            ValveCommand,
+            '/valve/command',
+            self._command_callback,
+            10,
+        )
         self.get_logger().info('Qt GUI ROS2 node started.')
 
     def _vision_callback(self, msg):
         self._on_vision_cb(msg)
+
+    def _command_callback(self, msg):
+        self._on_command_cb(msg)
 
 
 class GUINode(QMainWindow):
@@ -59,6 +69,9 @@ class GUINode(QMainWindow):
         self.ui.stopCameraButton.clicked.connect(self.stop_camera)
         self.ui.imageModeComboBox.currentIndexChanged.connect(self.update_camera_view)
 
+        self._reset_valve_data()
+        self._set_current_command('none')
+        self.ui.fpsValueLabel.setText('10 FPS')
         self._set_camera_running(False)
         self._set_placeholder('等待图像流...')
 
@@ -78,6 +91,19 @@ class GUINode(QMainWindow):
             self._set_camera_running(True)
         self.update_camera_view()
 
+    def on_command_message(self, msg):
+        motion_type = (msg.motion_type or 'none').strip() or 'none'
+        self._set_current_command(motion_type)
+
+        if not msg.valid or motion_type == 'none':
+            self._reset_valve_data()
+            return
+
+        self.ui.xValueLabel.setText(self._format_mm(msg.x))
+        self.ui.yValueLabel.setText(self._format_mm(msg.y))
+        self.ui.zValueLabel.setText(self._format_mm(msg.z))
+        self.ui.confidenceValueLabel.setText(self._format_confidence(msg.confidence))
+
     def start_camera(self):
         if self.detector_process.state() != QProcess.NotRunning:
             self.ui.commandLogEdit.append('[Vision] 图像处理节点已在运行。')
@@ -87,6 +113,8 @@ class GUINode(QMainWindow):
         self.last_rgb_frame = None
         self.last_depth_frame = None
         self.received_frame_count = 0
+        self._reset_valve_data()
+        self._set_current_command('none')
         self._set_placeholder('正在启动图像处理节点...')
 
         self.detector_process.start(
@@ -113,6 +141,8 @@ class GUINode(QMainWindow):
         self.last_rgb_frame = None
         self.last_depth_frame = None
         self.received_frame_count = 0
+        self._reset_valve_data()
+        self._set_current_command('none')
 
         if self.detector_process.state() == QProcess.NotRunning:
             self._set_camera_running(False)
@@ -208,6 +238,36 @@ class GUINode(QMainWindow):
             self.ui.cameraStatusValueLabel.setText('未启动')
             self.ui.systemStatusLabel.setText('● 系统状态：待连接')
 
+    def _reset_valve_data(self):
+        self.ui.xValueLabel.setText('-- mm')
+        self.ui.yValueLabel.setText('-- mm')
+        self.ui.zValueLabel.setText('-- mm')
+        self.ui.confidenceValueLabel.setText('--')
+
+    def _set_current_command(self, motion_type):
+        command_text = self._motion_type_text(motion_type)
+        self.ui.currentCommandLabel.setText(command_text)
+
+    def _motion_type_text(self, motion_type):
+        command_names = {
+            'far_move': 'far_move：远距离靠近',
+            'no_ahead_check': 'no_ahead_check：平面校正',
+            'check_and_spin': 'check_and_spin：检测并旋转',
+            'small_move': 'small_move：小阀门靠近',
+            'small_no_head': 'small_no_head：小阀门校正',
+            'none': 'none：暂无执行命令',
+        }
+        return command_names.get(motion_type, f'{motion_type}：未知命令')
+
+    def _format_mm(self, value):
+        return f'{float(value):.1f} mm'
+
+    def _format_confidence(self, confidence):
+        confidence = float(confidence)
+        if confidence <= 1.0:
+            return f'{confidence * 100.0:.1f}%'
+        return f'{confidence:.1f}%'
+
     def _set_placeholder(self, text):
         self.ui.cameraViewLabel.setPixmap(QPixmap())
         self.ui.cameraViewLabel.setText(text)
@@ -290,7 +350,7 @@ def main(args=None):
     app = QApplication(qt_args)
 
     window = GUINode(ros_node=None)
-    ros_node = Ros2GuiNode(window.on_vision_message)
+    ros_node = Ros2GuiNode(window.on_vision_message, window.on_command_message)
     window.ros_node = ros_node
     window.show()
 
