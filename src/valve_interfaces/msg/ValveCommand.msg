@@ -17,6 +17,18 @@ string motion_type
 bool need_rotation_correction
 float32 rotation_correction_deg
 
+# Valve plane pose estimated from point cloud, in camera optical frame.
+# yaw:   rotation about camera Y axis; positive means plane normal leans to +X.
+# pitch: rotation about camera X axis; positive means plane normal leans upward.
+bool plane_valid
+float32 valve_yaw_deg
+float32 valve_pitch_deg
+float32 plane_normal_x
+float32 plane_normal_y
+float32 plane_normal_z
+uint32 plane_inlier_count
+float32 plane_inlier_ratio
+
 # Optional debug info
 float32 confidence
 int32 class_id

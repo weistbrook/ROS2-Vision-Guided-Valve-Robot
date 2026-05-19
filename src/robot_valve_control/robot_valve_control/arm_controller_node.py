@@ -186,7 +186,9 @@ class ArmControllerNode(Node):
             f"收到运动指令: type={msg.motion_type}, "
             f"x={msg.x:.2f}, y={msg.y:.2f}, z={msg.z:.2f}, "
             f"rotate={msg.need_rotation_correction}, "
-            f"angle={msg.rotation_correction_deg:.2f}"
+            f"angle={msg.rotation_correction_deg:.2f}, "
+            f"plane_valid={msg.plane_valid}, "
+            f"yaw={msg.valve_yaw_deg:.2f}, pitch={msg.valve_pitch_deg:.2f}"
         )
 
         if msg.need_rotation_correction:
