@@ -19,11 +19,14 @@ class ArmControllerNode(Node):
         self.declare_parameter('host', '192.168.0.200')
         self.declare_parameter('port', 2090)
         self.declare_parameter('require_ui_enable', False)
+        self.declare_parameter('plane_alignment_sleep_sec', 3.0)
 
         self.host = self.get_parameter('host').value
         self.port = int(self.get_parameter('port').value)
         self.require_ui_enable = bool(self.get_parameter('require_ui_enable').value)
         self.ui_motion_enabled = not self.require_ui_enable
+        self.plane_alignment_sleep_sec = float(self.get_parameter('plane_alignment_sleep_sec').value)
+        self.plane_alignment_done = False
 
         self.client_socket = None
         self.connected = False
@@ -42,7 +45,7 @@ class ArmControllerNode(Node):
             ValveCommand,
             '/valve/command',
             self.command_callback,
-            10
+            1
         )
         self.enable_subscription = self.create_subscription(
             Bool,
@@ -76,7 +79,10 @@ class ArmControllerNode(Node):
                 daemon=True
             )
             recv_thread.start()
-
+            response = self.send_command("System.Login 0")
+            response = self.send_command("Robot.PowerEnable 1,1")
+            response = self.send_command("Thread.Start")
+            response = self.send_command("System.Speed 3")
             self.get_logger().info(f"已连接机械臂: {self.host}:{self.port}")
             return True
 
@@ -158,6 +164,7 @@ class ArmControllerNode(Node):
 
         self.ui_motion_enabled = bool(msg.data)
         if self.ui_motion_enabled:
+            self.plane_alignment_done = False
             self.get_logger().info('已收到 UI 一键旋阀使能，开始接受运动指令。')
         else:
             self.get_logger().info('UI 已关闭运动使能，暂停接受运动指令。')
@@ -174,12 +181,36 @@ class ArmControllerNode(Node):
             except queue.Empty:
                 continue
 
+            # 如果距离上次执行还没到间隔，不要一直拿着旧 msg 睡觉
             elapsed = time.time() - self.last_command_time
-            if elapsed < self.command_interval:
-                time.sleep(self.command_interval - elapsed)
+            remaining = self.command_interval - elapsed
+
+            if remaining > 0:
+                end_time = time.time() + remaining
+
+                # 在等待期间，不断尝试用更新的 msg 替换旧 msg
+                while time.time() < end_time and rclpy.ok():
+                    timeout = min(0.05, end_time - time.time())
+                    try:
+                        msg = self.command_queue.get(timeout=timeout)
+                    except queue.Empty:
+                        pass
+
+            # 真正执行前，再把队列里积压的消息全部清掉，只保留最新
+            while True:
+                try:
+                    msg = self.command_queue.get_nowait()
+                except queue.Empty:
+                    break
 
             self.execute_valve_command(msg)
             self.last_command_time = time.time()
+    def clear_command_queue(self):
+        while True:
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def execute_valve_command(self, msg):
         self.get_logger().info(
@@ -191,6 +222,20 @@ class ArmControllerNode(Node):
             f"yaw={msg.valve_yaw_deg:.2f}, pitch={msg.valve_pitch_deg:.2f}"
         )
 
+        alignment_state = self.execute_plane_alignment_once(msg)
+
+        if alignment_state == "failed":
+            return
+
+        if alignment_state == "aligned":
+            self.get_logger().info(
+                "Plane alignment was just completed. "
+                "Discarding this pre-alignment movement command and waiting for a fresh command."
+            )
+            self.clear_command_queue()
+            self.last_command_time = 0.0
+            return
+
         if msg.need_rotation_correction:
             rotate_cmd = f"Move.Axis 6,{msg.rotation_correction_deg:.3f}"
             resp = self.send_command(rotate_cmd)
@@ -198,19 +243,19 @@ class ArmControllerNode(Node):
             time.sleep(5.0)
 
         if msg.motion_type == "far_move":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "no_ahead_check":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},0.000,{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},0.000,{msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "check_and_spin":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "small_move":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},{msg.y:.3f},{msg.z:.3f},0,0,0}}"
 
         elif msg.motion_type == "small_no_head":
-            move_cmd = f"Move.LOffset {{{msg.x:.3f},0.000,{-msg.z:.3f},0,0,0}}"
+            move_cmd = f"Move.LOffset {{{msg.x:.3f},0.000,{msg.z:.3f},0,0,0}}"
 
         else:
             self.get_logger().warn(f"未知运动类型: {msg.motion_type}")
@@ -218,6 +263,44 @@ class ArmControllerNode(Node):
 
         resp = self.send_command(move_cmd)
         self.get_logger().info(f"执行移动: {move_cmd} -> {resp}")
+
+    def execute_plane_alignment_once(self, msg):
+        if self.plane_alignment_done:
+            return "done"
+
+        if not msg.plane_valid:
+            self.get_logger().warn(
+                "Valve plane alignment skipped for this command: plane_valid=False. "
+                "Movement is skipped and will retry on the next valid plane command."
+            )
+            return "failed"
+
+        pitch_cmd_deg = -float(msg.valve_pitch_deg)
+        yaw_cmd_deg = -float(msg.valve_yaw_deg)
+
+        pitch_cmd = f"Move.Axis 4,{pitch_cmd_deg:.3f}"
+        pitch_resp = self.send_command(pitch_cmd)
+        self.get_logger().info(
+            f"Plane pitch alignment: valve_pitch={msg.valve_pitch_deg:.3f}, "
+            f"axis_cmd={pitch_cmd} -> {pitch_resp}"
+        )
+        time.sleep(self.plane_alignment_sleep_sec)
+
+        yaw_cmd = f"Move.Axis 5,{yaw_cmd_deg:.3f}"
+        yaw_resp = self.send_command(yaw_cmd)
+        self.get_logger().info(
+            f"Plane yaw alignment: valve_yaw={msg.valve_yaw_deg:.3f}, "
+            f"axis_cmd={yaw_cmd} -> {yaw_resp}"
+        )
+        time.sleep(self.plane_alignment_sleep_sec)
+
+        self.plane_alignment_done = True
+        self.get_logger().info(
+            "Valve plane alignment finished once. "
+            "Current movement command is discarded; waiting for fresh x/y/z after alignment."
+        )
+
+        return "aligned"
 
     def close(self):
         self.connected = False
