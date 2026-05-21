@@ -1,17 +1,58 @@
-项目简介
-本项目基于 Jetson Nano 嵌入式平台，采用 ROS2 框架自主开发一套视觉引导机械臂工业阀门自动化作业系统。项目采用模块化解耦设计，自主实现自定义通信接口、视觉感知检测、机械臂运动控制、PyQt 可视化上位机四大核心功能；
-融合 YOLO11 目标检测与深度相机三维位姿解算，通过 ROS2 话题通信完成多节点联动，实现工业阀门识别、定位、机械臂自动趋近旋拧、实时状态可视化监控全流程自动化作业。
+# ROS2_QT_valve – 视觉引导机械臂工业阀门自动化作业系统
 
-各功能包作用
-valve_interfaces自定义 ROS2 Msg/Srv 通信接口，定义阀门控制指令、设备状态、位姿数据等消息格式，统一全项目节点通信协议，支撑模块化分布式开发。
-robot_valve_control核心控制业务节点：订阅视觉节点发布的阀门三维位姿信息，封装机械臂运动控制逻辑，实现工业阀门自动靠近、精准旋拧等作业动作，完成感知到执行的闭环控制。
-valve_qt_gui基于 PyQt 开发 ROS2 可视化上位机节点；支持实时显示视觉检测画面、机械臂运行状态、阀门工作参数，提供手动指令下发、自动模式切换、系统状态监控等人机交互能力。
+基于 Jetson Nano 嵌入式平台，采用 ROS2 框架自主开发的一套工业阀门自动化作业系统。项目利用 YOLO11 目标检测与深度相机三维位姿解算，通过模块化 ROS2 节点协同，实现阀门自动识别、空间定位、机械臂趋近与旋拧、以及 PyQt 可视化监控的全流程闭环控制。
 
-使用方法
+## 主要特性
+
+- 🔍 **视觉感知**：YOLO11 模型实时检测阀门与旋钮，结合深度相机（RGB-D）计算三维位姿及平面法向量。
+- 🤖 **机械臂控制**：自定义 `ValveCommand` 接口，封装运动队列、平面校准、旋转校正等逻辑，支持远距离趋近与精细调整。
+- 🖥️ **可视化监控**：基于 PyQt5 的上位机节点，实时显示检测画面、机械臂连接状态、运动指令及系统日志。
+- 📦 **模块化解耦**：各功能独立 ROS2 节点，通过自定义消息通信，便于扩展与调试。
+
+## 功能包说明
+
+| 包名                     | 作用                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `valve_interfaces`       | 自定义 ROS2 消息与服务接口，定义 `ValveCommand`（运动指令）、`ValveVision`（图像与深度）、`Bool` 使能信号等，统一全项目通信协议。 |
+| `robot_valve_control`    | 核心控制节点（`arm_controller_node`）：订阅视觉发布的阀门位姿，解析运动类型并调用机械臂 TCP 指令，完成靠近、对齐、旋拧等动作。     |
+| `valve_qt_gui`           | PyQt5 上位机节点：订阅图像/状态话题，发布手动指令与运动使能信号；提供实时视频流、按钮面板、参数调节等交互界面。                     |
+
+
+## 安装与编译
+
+### 1. 克隆仓库
 git clone https://github.com/weistbrook/ROS2_QT_valve.git
 
-cd ~/ROS2_QT_valve
+cd ROS2_QT_valve
 
+### 2. 编译
 colcon build
 
+### 3. 环境设置
 source install/setup.bash
+
+## 使用方法
+### 1. 启动视觉与机械臂控制节点
+
+### 终端1：启动视觉检测节点（自动发布 ValveCommand）
+ros2 run robot_valve_control valve_detection_node
+
+### 终端2：启动机械臂控制节点（订阅命令并驱动真实机械臂）
+ros2 run robot_valve_control arm_controller_node
+
+### 2. 启动可视化上位机（可选）
+
+ros2 run valve_qt_gui valve_qt_gui_node
+
+## 🙏 Acknowledgments
+
+- 🤖 **ROS2** - Robot operating system
+- 🎯 **Ultralytics YOLO** - Object detection
+- 🖥️ **PyQt** - GUI framework
+- 👥 All contributors and community members
+
+## 📫 Contact
+
+- 👤 Project Maintainer: [weistbrook](https://github.com/weistbrook)
+- 💬 For questions or suggestions, please open an issue on [GitHub Issues](https://github.com/weistbrook/ROS2_QT_valve/issues)
+- 🔗 Project Link: [https://github.com/weistbrook/ROS2_QT_valve](https://github.com/weistbrook/ROS2_QT_valve)
