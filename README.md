@@ -1,4 +1,4 @@
-# ROS2_QT_valve – 视觉引导机械臂工业阀门自动化作业系统
+# ROS2-Vision-Guided-Valve-Robot – 视觉引导机械臂工业阀门自动化作业系统
 
 基于 Jetson Nano 嵌入式平台，采用 ROS2 框架自主开发的一套工业阀门自动化作业系统。项目利用 YOLO11 目标检测与深度相机三维位姿解算，通过模块化 ROS2 节点协同，实现阀门自动识别、空间定位、机械臂趋近与旋拧、以及 PyQt 可视化监控的全流程闭环控制。
 
@@ -21,7 +21,7 @@
 ## 安装与编译
 
 ### 1. 克隆仓库
-git clone https://github.com/weistbrook/ROS2_QT_valve.git
+git clone [https://github.com/weistbrook/ROS2_QT_valve.git](https://github.com/weistbrook/ROS2-Vision-Guided-Valve-Robot.git)
 
 cd ROS2_QT_valve
 
