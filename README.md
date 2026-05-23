@@ -21,7 +21,7 @@
 ## 安装与编译
 
 ### 1. 克隆仓库
-git clone [https://github.com/weistbrook/ROS2_QT_valve.git](https://github.com/weistbrook/ROS2-Vision-Guided-Valve-Robot.git)
+git clone https://github.com/weistbrook/ROS2-Vision-Guided-Valve-Robot.git
 
 cd ROS2_QT_valve
 
@@ -54,5 +54,5 @@ ros2 run valve_qt_gui valve_qt_gui_node
 ## 📫 Contact
 
 - 👤 Project Maintainer: [weistbrook](https://github.com/weistbrook)
-- 💬 For questions or suggestions, please open an issue on [GitHub Issues](https://github.com/weistbrook/ROS2_QT_valve/issues)
-- 🔗 Project Link: [https://github.com/weistbrook/ROS2_QT_valve](https://github.com/weistbrook/ROS2_QT_valve)
+- 💬 For questions or suggestions, please open an issue on [GitHub Issues](https://github.com/weistbrook/ROS2-Vision-Guided-Valve-Robot/issues)
+- 🔗 Project Link: https://github.com/weistbrook/ROS2-Vision-Guided-Valve-Robot.git
